@@ -23,6 +23,7 @@ def load(name):
 protocol = load("protocol")
 history = load("history")
 clock = load("clock")
+views = load("views")
 
 
 def advertisement(temp=235, humid=456, battery=87, error=False):
@@ -225,6 +226,226 @@ class ClockTests(unittest.TestCase):
         wifi.disconnect.assert_called_once()
 
 
+class ViewTests(unittest.TestCase):
+    def test_shared_scale_covers_all_values_with_margin(self):
+        low, high = views.scale([182, 251, 214], 10, 40, 10)
+        self.assertLess(low, 182)
+        self.assertGreater(high, 251)
+        self.assertEqual((low % 10, high % 10), (0, 0))
+        self.assertEqual(views.scale([], 10, 40, 10), None)
+        self.assertEqual(views.scale([None], 10, 40, 10), None)
+
+    def test_scale_handles_negative_identical_and_clamped_values(self):
+        low, high = views.scale([-125, -125], 10, 40, 10)
+        self.assertLess(low, -125)
+        self.assertGreater(high, -125)
+        self.assertGreaterEqual(high - low, 40)
+        self.assertEqual(views.scale([995, 1000], 30, 100, 50, 0, 1000)[1], 1000)
+        low, high = views.scale([10, 20], 30, 100, 50, 0, 1000)
+        self.assertEqual(low, 0)
+        self.assertGreaterEqual(high - low, 100)
+
+    def test_fill_is_bounded(self):
+        self.assertEqual(views.fill(150, 100, 200, 156), 78)
+        self.assertEqual(views.fill(50, 100, 200, 156), 0)
+        self.assertEqual(views.fill(250, 100, 200, 156), 156)
+        self.assertEqual(views.fill(5, 5, 5, 156), 0)
+
+    def test_runs_keep_gaps_blank(self):
+        self.assertEqual(views.runs([None, 1, 2, None, None, 5, None]),
+                         [[(1, 1), (2, 2)], [(5, 5)]])
+        self.assertEqual(views.runs([None, None]), [])
+        self.assertEqual(views.runs([0, -10]), [[(0, 0), (1, -10)]])
+
+    def make_app(self, store, now_stamp, devices=None):
+        scan = Mock(dropped=0)
+        scan.devices = devices or {}
+        session_clock = Mock(message="")
+        session_clock.now.return_value = now_stamp
+        ticks = {"ms": 0}
+        fake_time = types.SimpleNamespace(ticks_ms=lambda: ticks["ms"],
+                                         ticks_diff=lambda a, b: a - b,
+                                         gmtime=lambda s: (2026, 10, 31, 12, 0))
+        modules = {
+            "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
+            "history": types.SimpleNamespace(History=Mock(return_value=store)),
+            "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views, "bluetooth": types.SimpleNamespace(BLE=Mock()),
+            "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),
+            "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
+        }
+        screen = Mock(width=320, height=240)
+        screen.measure_text.return_value = (40, 12)
+        namespace = {
+            "badge": Mock(ticks=0, **{"battery_level.return_value": 64,
+                                      "is_charging.return_value": False}),
+            "screen": screen,
+            "font": types.SimpleNamespace(nope=1), "shape": Mock(),
+            "color": types.SimpleNamespace(rgb=lambda *v: v), "HIRES": 1, "VSYNC": 2,
+            "run": Mock(),
+        }
+        for button in ("BACK", "UP", "DOWN", "SELECT", "MENU", "LEFT", "RIGHT"):
+            namespace["BUTTON_" + button] = button
+        namespace["badge"].pressed.return_value = False
+        with patch.dict(sys.modules, modules), patch("os.chdir"), \
+                patch("sys.path", []):
+            exec(compile((APP / "__init__.py").read_text(),
+                         str(APP / "__init__.py"), "exec"), namespace)
+        namespace["report_error"] = Mock()
+        namespace["view"] = 4
+        return namespace, screen, ticks
+
+    def test_trend_plots_each_paired_sensor_and_leaves_gaps(self):
+        bins = [None] * 90
+        bins[10:13] = [200, 210, 220]
+        bins[50] = -40
+        store = Mock(config={"sensors": ["a", None, "c"]}, warning="", last=[0])
+        store.graph.return_value = (bins, -40, 220, 4)
+        app, screen, ticks = self.make_app(store, 1_800_000_000)
+        app["update"]()
+        self.assertEqual([c.args for c in store.graph.call_args_list],
+                         [(0, 1_800_000_000, 86400, 1, 90),
+                          (2, 1_800_000_000, 86400, 1, 90)])
+        # Two runs per sensor: one 3-point run drawn as two doubled segments,
+        # and an isolated point drawn as a marker, never bridged across the gap.
+        self.assertEqual(screen.line.call_count, 2 * 2 * 2)
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("S2 Not paired", texts)
+        self.assertNotIn("No saved readings", texts)
+        store.graph.reset_mock()
+        ticks["ms"] = 59_000
+        app["update"]()
+        store.graph.assert_not_called()
+        ticks["ms"] = 61_000
+        app["update"]()
+        self.assertEqual(store.graph.call_count, 2)
+
+    def test_trend_without_time_or_history_is_explicit(self):
+        store = Mock(config={"sensors": ["a", "b", "c"]}, warning="", last=[0])
+        store.graph.return_value = ([None] * 90, None, None, 0)
+        app, screen, _ = self.make_app(store, None)
+        app["update"]()
+        store.graph.assert_not_called()
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("needs WiFi time", texts)
+        app, screen, _ = self.make_app(store, 1_800_000_000)
+        app["update"]()
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("No saved readings in the last 24 hours", texts)
+        screen.line.assert_not_called()
+
+    def test_trend_read_error_is_reported_and_not_retried_every_frame(self):
+        store = Mock(config={"sensors": ["a", None, None]}, warning="", last=[0])
+        store.graph.side_effect = OSError(5)
+        app, screen, _ = self.make_app(store, 1_800_000_000)
+        app["update"]()
+        app["update"]()
+        store.graph.assert_called_once()
+        app["report_error"].assert_called_once()
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("History read failed; retry in 60s", texts)
+
+    def header(self, screen):
+        return [str(c.args[0]) for c in screen.text.call_args_list]
+
+    def test_badge_battery_in_header_is_throttled(self):
+        store = Mock(config={"sensors": [None, None, None]}, warning="", last=[0])
+        app, screen, ticks = self.make_app(store, None)
+        app["view"] = 0
+        app["update"]()
+        self.assertIn("64%", self.header(screen))
+        app["badge"].battery_level.return_value = 12
+        ticks["ms"] = 4_000
+        app["update"]()
+        self.assertEqual(app["badge"].battery_level.call_count, 1)
+        ticks["ms"] = 5_000
+        drawn = []
+        screen.text.side_effect = lambda *a: drawn.append((a[0], screen.pen))
+        app["update"]()
+        self.assertEqual(app["badge"].battery_level.call_count, 2)
+        self.assertIn(("12%", (255, 130, 130)), drawn)
+
+    def test_badge_battery_charging_and_unavailable(self):
+        store = Mock(config={"sensors": [None, None, None]}, warning="", last=[0])
+        app, screen, _ = self.make_app(store, None)
+        app["badge"].is_charging.return_value = True
+        app["update"]()
+        self.assertIn("CHG", self.header(screen))
+        self.assertNotIn("64%", self.header(screen))
+        for failure in (AttributeError("battery_level"), OSError(19)):
+            app, screen, _ = self.make_app(store, None)
+            app["badge"].battery_level.side_effect = failure
+            app["update"]()
+            self.assertIn("--", self.header(screen))
+            self.assertEqual(app["battery"], (False, None))
+        app, screen, _ = self.make_app(store, None)
+        app["badge"].battery_level.return_value = None
+        app["update"]()
+        self.assertIn("--", self.header(screen))
+        app, screen, _ = self.make_app(store, None)
+        app["badge"].battery_level.return_value = 140
+        app["update"]()
+        self.assertIn("100%", self.header(screen))
+
+    def test_temperature_bands(self):
+        names = [views.BANDS[views.band(t)][1] for t in (-200, -1, 0, 159, 160,
+                                                         239, 240, 299, 300, 450)]
+        self.assertEqual(names, ["Freezing", "Freezing", "Chilly", "Chilly",
+                                 "Comfy", "Comfy", "Warm", "Warm",
+                                 "Scorching", "Scorching"])
+
+    def test_left_right_cycles_every_view_and_each_renders(self):
+        scan = Mock(dropped=0)
+        scan.devices = {
+            "a": {"seen": 0, "reading": (-55, 410, 90, False)},
+            "b": {"seen": 0, "reading": (215, 980, 50, False)},
+        }
+        store = Mock(config={"sensors": ["a", "b", None]}, warning="", last=[0])
+        session_clock = Mock(message="Waiting for time")
+        session_clock.now.return_value = None
+        fake_time = types.SimpleNamespace(ticks_ms=lambda: 0,
+                                         ticks_diff=lambda a, b: a - b)
+        modules = {
+            "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
+            "history": types.SimpleNamespace(History=Mock(return_value=store)),
+            "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views, "bluetooth": types.SimpleNamespace(BLE=Mock()),
+            "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),
+            "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
+        }
+        screen = Mock(width=320, height=240)
+        screen.measure_text.return_value = (40, 12)
+        namespace = {
+            "badge": Mock(ticks=12345, **{"battery_level.return_value": 64,
+                                          "is_charging.return_value": False}),
+            "screen": screen,
+            "font": types.SimpleNamespace(nope=1), "shape": Mock(),
+            "color": types.SimpleNamespace(rgb=lambda *v: v), "HIRES": 1, "VSYNC": 2,
+            "run": Mock(),
+        }
+        for button in ("BACK", "UP", "DOWN", "SELECT", "MENU", "LEFT", "RIGHT"):
+            namespace["BUTTON_" + button] = button
+        with patch.dict(sys.modules, modules), patch("os.chdir"), \
+                patch("sys.path", []):
+            exec(compile((APP / "__init__.py").read_text(),
+                         str(APP / "__init__.py"), "exec"), namespace)
+        pressed = {"button": "RIGHT"}
+        namespace["badge"].pressed.side_effect = lambda b: b == pressed["button"]
+        seen = []
+        for _ in range(len(views.MODES)):
+            namespace["update"]()
+            seen.append(namespace["view"])
+            self.assertEqual(namespace["page"], "live")
+        self.assertEqual(seen, [1, 2, 3, 4, 0])
+        pressed["button"] = "LEFT"
+        namespace["update"]()
+        self.assertEqual(namespace["view"], 4)
+        self.assertEqual(namespace["slot"], 0)
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        for expected in ("-5.5", "21.5", "Not paired", "Freezing", "Comfy"):
+            self.assertIn(expected, texts)
+
+
 class LifecycleTests(unittest.TestCase):
     def test_scanner_error_keeps_controls_and_rendering_responsive(self):
         scan = Mock()
@@ -240,6 +461,7 @@ class LifecycleTests(unittest.TestCase):
             "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
             "history": types.SimpleNamespace(History=Mock(return_value=store)),
             "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views,
             "bluetooth": types.SimpleNamespace(BLE=Mock()),
             "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),
             "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
@@ -253,6 +475,9 @@ class LifecycleTests(unittest.TestCase):
         for button in ("BACK", "UP", "DOWN", "SELECT", "MENU", "LEFT", "RIGHT"):
             namespace["BUTTON_" + button] = button
         namespace["badge"].pressed.side_effect = lambda button: button == "DOWN"
+        namespace["screen"].measure_text.return_value = (40, 12)
+        namespace["badge"].battery_level.return_value = 80
+        namespace["badge"].is_charging.return_value = False
         with patch.dict(sys.modules, modules), patch("os.chdir"), \
                 patch("sys.path", []):
             exec(compile((APP / "__init__.py").read_text(),
@@ -276,6 +501,7 @@ class LifecycleTests(unittest.TestCase):
             "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
             "history": types.SimpleNamespace(History=Mock(return_value=Mock())),
             "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views,
             "bluetooth": types.SimpleNamespace(BLE=Mock()),
             "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
             "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),

@@ -60,10 +60,48 @@ simulator or legacy badge.
 
 | Screen | Controls |
 | --- | --- |
-| Live overview | UP/DOWN select sensor; SELECT opens history or pairs an empty slot |
+| Live overview | LEFT/RIGHT cycle display views; UP/DOWN select sensor; SELECT opens history or pairs an empty slot |
 | Pairing | UP/DOWN choose; SELECT saves an empty slot; BACK cancels |
 | History | LEFT/RIGHT select 24 hours, 7 days, or 30 days; SELECT switches temperature/humidity; BACK returns |
 | Everywhere | HOME returns to the menu and releases Bluetooth/Wi-Fi |
+
+### Display views
+
+The home screen has five views. The top-right label shows which one is open,
+for example `< Bars 2/5 >`. Above it, every home-screen view shows the
+**badge's own battery** (not the thermometers'): a battery icon and percentage
+from the firmware's `badge.battery_level()`, read every five seconds. It turns
+red at 15 % or below. While `badge.is_charging()` reports charging, the icon
+animates and shows `CHG` instead of a percentage, because the level read while
+charging is not reliable. If the firmware cannot provide a reading, it shows
+`--` rather than a guessed value. Thermometer batteries remain in the List and
+Big numbers views. The selected view resets to List when the app is
+reopened.
+
+1. **List**: temperature, humidity, battery, and reading age for each sensor.
+2. **Bars**: temperature and humidity bars for every sensor. All bars of each
+   kind use the same scale: the lowest and highest current readings plus a
+   margin, rounded to whole degrees or 5 % steps. The scale is shown under the
+   title.
+3. **Big numbers**: large Celsius temperatures, colored by temperature band,
+   with humidity and battery below.
+4. **Scenes**: one small animated scene per sensor, chosen by temperature:
+   Freezing (below 0 °C, snowman), Chilly (0–16 °C, beanie and scarf),
+   Comfy (16–24 °C, smiling in the sun), Warm (24–30 °C, sunglasses on the
+   beach), and Scorching (30 °C and above, melting in the heat).
+5. **24h temps**: saved temperature history for all three sensors on one
+   chart covering the last 24 hours. Each sensor has its own color, matching
+   the key at the top, and its number is shown at the end of its line. Points
+   are averages of the saved five-minute records (about 16 minutes per point),
+   on a shared scale labeled in °C. Times when nothing was recorded stay blank,
+   so lines are never drawn across gaps. The chart needs Wi-Fi time, as other
+   history does, and refreshes once a minute. It says so when there is no time
+   yet or no saved readings. A storage read error shows a message and retries
+   after a minute.
+
+Stale readings (older than 60 seconds) are grey and marked STALE; scenes show
+`?` for them rather than an out-of-date mood. Unpaired, waiting, and
+invalid-reading sensors are labeled explicitly in every view.
 
 History plots bucket averages in at most 80 screen columns, shows the actual
 sample count and minimum/maximum, and leaves missing buckets blank. Times are
