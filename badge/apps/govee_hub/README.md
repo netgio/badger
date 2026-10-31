@@ -68,7 +68,14 @@ simulator or legacy badge.
 ### Display views
 
 The home screen has five views. The top-right label shows which one is open,
-for example `< Bars 2/5 >`. The selected view resets to List when the app is
+for example `< Bars 2/5 >`. Above it, every home-screen view shows the
+**badge's own battery** (not the thermometers'): a battery icon and percentage
+from the firmware's `badge.battery_level()`, read every five seconds. It turns
+red at 15 % or below. While `badge.is_charging()` reports charging, the icon
+animates and shows `CHG` instead of a percentage, because the level read while
+charging is not reliable. If the firmware cannot provide a reading, it shows
+`--` rather than a guessed value. Thermometer batteries remain in the List and
+Big numbers views. The selected view resets to List when the app is
 reopened.
 
 1. **List**: temperature, humidity, battery, and reading age for each sensor.

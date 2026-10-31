@@ -277,7 +277,9 @@ class ViewTests(unittest.TestCase):
         screen = Mock(width=320, height=240)
         screen.measure_text.return_value = (40, 12)
         namespace = {
-            "badge": Mock(ticks=0), "screen": screen,
+            "badge": Mock(ticks=0, **{"battery_level.return_value": 64,
+                                      "is_charging.return_value": False}),
+            "screen": screen,
             "font": types.SimpleNamespace(nope=1), "shape": Mock(),
             "color": types.SimpleNamespace(rgb=lambda *v: v), "HIRES": 1, "VSYNC": 2,
             "run": Mock(),
@@ -343,6 +345,48 @@ class ViewTests(unittest.TestCase):
         texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
         self.assertIn("History read failed; retry in 60s", texts)
 
+    def header(self, screen):
+        return [str(c.args[0]) for c in screen.text.call_args_list]
+
+    def test_badge_battery_in_header_is_throttled(self):
+        store = Mock(config={"sensors": [None, None, None]}, warning="", last=[0])
+        app, screen, ticks = self.make_app(store, None)
+        app["view"] = 0
+        app["update"]()
+        self.assertIn("64%", self.header(screen))
+        app["badge"].battery_level.return_value = 12
+        ticks["ms"] = 4_000
+        app["update"]()
+        self.assertEqual(app["badge"].battery_level.call_count, 1)
+        ticks["ms"] = 5_000
+        drawn = []
+        screen.text.side_effect = lambda *a: drawn.append((a[0], screen.pen))
+        app["update"]()
+        self.assertEqual(app["badge"].battery_level.call_count, 2)
+        self.assertIn(("12%", (255, 130, 130)), drawn)
+
+    def test_badge_battery_charging_and_unavailable(self):
+        store = Mock(config={"sensors": [None, None, None]}, warning="", last=[0])
+        app, screen, _ = self.make_app(store, None)
+        app["badge"].is_charging.return_value = True
+        app["update"]()
+        self.assertIn("CHG", self.header(screen))
+        self.assertNotIn("64%", self.header(screen))
+        for failure in (AttributeError("battery_level"), OSError(19)):
+            app, screen, _ = self.make_app(store, None)
+            app["badge"].battery_level.side_effect = failure
+            app["update"]()
+            self.assertIn("--", self.header(screen))
+            self.assertEqual(app["battery"], (False, None))
+        app, screen, _ = self.make_app(store, None)
+        app["badge"].battery_level.return_value = None
+        app["update"]()
+        self.assertIn("--", self.header(screen))
+        app, screen, _ = self.make_app(store, None)
+        app["badge"].battery_level.return_value = 140
+        app["update"]()
+        self.assertIn("100%", self.header(screen))
+
     def test_temperature_bands(self):
         names = [views.BANDS[views.band(t)][1] for t in (-200, -1, 0, 159, 160,
                                                          239, 240, 299, 300, 450)]
@@ -372,7 +416,9 @@ class ViewTests(unittest.TestCase):
         screen = Mock(width=320, height=240)
         screen.measure_text.return_value = (40, 12)
         namespace = {
-            "badge": Mock(ticks=12345), "screen": screen,
+            "badge": Mock(ticks=12345, **{"battery_level.return_value": 64,
+                                          "is_charging.return_value": False}),
+            "screen": screen,
             "font": types.SimpleNamespace(nope=1), "shape": Mock(),
             "color": types.SimpleNamespace(rgb=lambda *v: v), "HIRES": 1, "VSYNC": 2,
             "run": Mock(),
@@ -430,6 +476,8 @@ class LifecycleTests(unittest.TestCase):
             namespace["BUTTON_" + button] = button
         namespace["badge"].pressed.side_effect = lambda button: button == "DOWN"
         namespace["screen"].measure_text.return_value = (40, 12)
+        namespace["badge"].battery_level.return_value = 80
+        namespace["badge"].is_charging.return_value = False
         with patch.dict(sys.modules, modules), patch("os.chdir"), \
                 patch("sys.path", []):
             exec(compile((APP / "__init__.py").read_text(),

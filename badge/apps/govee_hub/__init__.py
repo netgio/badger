@@ -47,6 +47,7 @@ BAND_PENS = (color.rgb(150, 210, 255), color.rgb(120, 170, 255), GREEN,
 SENSOR_PENS = (color.rgb(255, 160, 70), color.rgb(90, 200, 255),
                color.rgb(235, 110, 235))
 TREND_BINS = 90
+BATTERY_MS = 5000
 RANGES = (86400, 7 * 86400, 30 * 86400)
 RANGE_LABELS = ("24 hours", "7 days", "30 days")
 
@@ -67,6 +68,8 @@ page = "live"
 view = 0
 trend_data = None
 trend_next = 0
+battery = None
+battery_next = 0
 candidate_index = 0
 range_index = 0
 field = 1
@@ -214,10 +217,49 @@ def disc(x, y, r, pen):
     screen.shape(shape.circle(x, y, r))
 
 
+def read_battery(now):
+    """Badge battery as (charging, level 0-100 or None); None when unknown."""
+    global battery, battery_next
+    if now >= battery_next:
+        battery_next = now + BATTERY_MS
+        try:
+            level = badge.battery_level()
+            level = (max(0, min(100, int(level)))
+                     if isinstance(level, (int, float)) else None)
+            battery = (bool(badge.is_charging()), level)
+        except (AttributeError, OSError, ValueError, TypeError) as error:
+            if battery != (False, None):
+                print("Govee Hub: badge battery unavailable:", error)
+            battery = (False, None)
+    return battery
+
+
+def draw_battery(now, right, top):
+    charging, level = read_battery(now)
+    if charging:
+        label, pen = "CHG", GREEN
+        fill = (badge.ticks // 20) % 100
+    elif level is None:
+        label, pen, fill = "--", GRAY, 0
+    else:
+        label = "%d%%" % level
+        pen = RED if level <= 15 else WHITE
+        fill = level
+    width, _ = screen.measure_text(label)
+    left = right - width
+    text(label, left, top, pen)
+    left -= 28
+    outline(left, top + 1, 22, 11, pen)
+    box(left + 22, top + 5, 2, 3, pen)
+    if fill:
+        box(left + 3, top + 4, max(1, 16 * fill // 100), 5, pen)
+
+
 def live(now):
     text("GOVEE HUB", 12, 10, GREEN, 2)
-    text("< %s %d/%d >" % (views.MODES[view], view + 1, len(views.MODES)),
-         196, 14, GRAY)
+    draw_battery(now, 308, 4)
+    right("< %s %d/%d >" % (views.MODES[view], view + 1, len(views.MODES)),
+          308, 20, GRAY)
     if view == 1:
         bars_view(now)
     elif view == 2:
