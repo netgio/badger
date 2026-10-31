@@ -300,7 +300,10 @@ class AppVisitor(ast.NodeVisitor):
         self._depth = 0
 
     def visit_Module(self, node: ast.Module) -> None:
-        for statement in node.body:
+        statements = list(node.body)
+        for statement in statements:
+            if isinstance(statement, ast.Try):
+                statements.extend(statement.body)
             if isinstance(statement, (ast.Expr, ast.Assign, ast.AnnAssign)):
                 value = statement.value
                 while isinstance(value, ast.Attribute):

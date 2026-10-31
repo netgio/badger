@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
 import io
 import sys
 import tempfile
@@ -31,6 +32,16 @@ inventory_badge_apps = load_script("inventory_badge_apps")
 
 
 class SkillScriptTests(unittest.TestCase):
+    def test_module_try_finally_starts_loop_but_function_or_guard_does_not(self):
+        for source, expected in (
+            ("try:\n    run(update)\nfinally:\n    close()\n", True),
+            ("def main():\n    run(update)\n", False),
+            ('if __name__ == "__main__":\n    run(update)\n', False),
+        ):
+            visitor = validate_app.AppVisitor()
+            visitor.visit(ast.parse(source))
+            self.assertEqual(bool(visitor.module_run_update_lines), expected)
+
     def test_validator_defaults_to_hardware_target(self):
         args = validate_app.parse_args(["badge/apps/demo"])
         self.assertEqual(args.target, "hardware")
