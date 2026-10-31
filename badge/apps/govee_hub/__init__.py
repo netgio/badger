@@ -44,6 +44,9 @@ HUMID_PEN = color.rgb(90, 170, 255)
 BLACK = color.rgb(10, 10, 14)
 BAND_PENS = (color.rgb(150, 210, 255), color.rgb(120, 170, 255), GREEN,
              color.rgb(255, 190, 60), color.rgb(255, 90, 70))
+SENSOR_PENS = (color.rgb(255, 160, 70), color.rgb(90, 200, 255),
+               color.rgb(235, 110, 235))
+TREND_BINS = 90
 RANGES = (86400, 7 * 86400, 30 * 86400)
 RANGE_LABELS = ("24 hours", "7 days", "30 days")
 
@@ -62,6 +65,8 @@ clock = Clock(time.ticks_ms, wifi, ntptime)
 slot = 0
 page = "live"
 view = 0
+trend_data = None
+trend_next = 0
 candidate_index = 0
 range_index = 0
 field = 1
@@ -127,13 +132,16 @@ def decimal(value):
 
 def controls(now):
     global slot, page, candidate_index, range_index, field, graph_dirty, view
+    global trend_next
     if badge.pressed(BUTTON_BACK):
         page = "live"
     if page == "live":
         if badge.pressed(BUTTON_LEFT):
             view = (view - 1) % len(views.MODES)
+            trend_next = 0
         if badge.pressed(BUTTON_RIGHT):
             view = (view + 1) % len(views.MODES)
+            trend_next = 0
         if badge.pressed(BUTTON_UP):
             slot = (slot - 1) % 3
         if badge.pressed(BUTTON_DOWN):
@@ -216,6 +224,8 @@ def live(now):
         big_view(now)
     elif view == 3:
         scene_view(now)
+    elif view == 4:
+        trend_view(now)
     else:
         list_view(now)
     overflow = ("BLE queue overflow: %d" % scanner.dropped
@@ -373,6 +383,72 @@ def scene(level, x, y, w, h, tick):
         for drop in range(2):
             dy = by - 10 + (tick + drop * 5) % 12
             disc(cx + 18 + drop * 4, dy, 2, color.rgb(120, 200, 255))
+
+
+def trend_view(now):
+    global trend_data, trend_next
+    stamp = clock.now(now)
+    if stamp is None:
+        text("24-hour history needs WiFi time", 12, 40, GREEN)
+        text("Live readings are in the other views.", 12, 60, GRAY)
+        return
+    if now >= trend_next:
+        # Set before reading so a storage error retries once a minute, not per frame.
+        trend_next = now + 60000
+        trend_data = None
+        trend_data = [history.graph(index, stamp, 86400, 1, TREND_BINS)
+                      if history.config["sensors"][index] else None
+                      for index in range(3)]
+    for index in range(3):
+        x = 12 + index * 100
+        box(x, 38, 10, 10, SENSOR_PENS[index])
+        state, reading, fresh = status(index, now)
+        label = ("S%d %s" % (index + 1, decimal(reading[0])) if reading
+                 else "S%d %s" % (index + 1, note(state)))
+        text(label + ("" if fresh or not reading else " old"), x + 14, 36,
+             WHITE if fresh else GRAY)
+    if trend_data is None:
+        text("History read failed; retry in 60s", 12, 112, RED)
+        return
+    bounds = [value for data in trend_data if data and data[3]
+              for value in (data[1], data[2])]
+    axis = views.scale(bounds, 5, 20, 10)
+    left, top, bottom = 34, 56, 186
+    box(left, top, TREND_BINS * 3, bottom - top, TRACK)
+    text("-24h", left, 189, GRAY)
+    text("-12h", left + TREND_BINS * 3 // 2 - 14, 189, GRAY)
+    text("now", left + TREND_BINS * 3 - 22, 189, GRAY)
+    if axis is None:
+        text("No saved readings in the last 24 hours", 44, 112, GRAY)
+        return
+    low, high = axis
+    text("%d" % (high // 10), 6, top - 2, GRAY)
+    text("%d" % (low // 10), 6, bottom - 12, GRAY)
+    text("C", 6, (top + bottom) // 2 - 6, GRAY)
+    span = high - low
+
+    def point(index, value):
+        return (left + index * 3 + 1,
+                int(bottom - 2 - (value - low) * (bottom - top - 4) / span))
+
+    for sensor, data in enumerate(trend_data):
+        if not data or not data[3]:
+            continue
+        screen.pen = SENSOR_PENS[sensor]
+        last = None
+        for run_ in views.runs(data[0]):
+            previous = None
+            for index, value in run_:
+                x, y = point(index, value)
+                if previous:
+                    screen.line(previous[0], previous[1], x, y)
+                    screen.line(previous[0], previous[1] + 1, x, y + 1)
+                else:
+                    screen.rectangle(x - 1, y - 1, 3, 3)
+                previous = last = (x, y)
+        if last:
+            text(str(sensor + 1), min(last[0] + 3, 312), last[1] - 6,
+                 SENSOR_PENS[sensor])
 
 
 def list_view(now):

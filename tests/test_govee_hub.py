@@ -251,6 +251,98 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(views.fill(250, 100, 200, 156), 156)
         self.assertEqual(views.fill(5, 5, 5, 156), 0)
 
+    def test_runs_keep_gaps_blank(self):
+        self.assertEqual(views.runs([None, 1, 2, None, None, 5, None]),
+                         [[(1, 1), (2, 2)], [(5, 5)]])
+        self.assertEqual(views.runs([None, None]), [])
+        self.assertEqual(views.runs([0, -10]), [[(0, 0), (1, -10)]])
+
+    def make_app(self, store, now_stamp, devices=None):
+        scan = Mock(dropped=0)
+        scan.devices = devices or {}
+        session_clock = Mock(message="")
+        session_clock.now.return_value = now_stamp
+        ticks = {"ms": 0}
+        fake_time = types.SimpleNamespace(ticks_ms=lambda: ticks["ms"],
+                                         ticks_diff=lambda a, b: a - b,
+                                         gmtime=lambda s: (2026, 10, 31, 12, 0))
+        modules = {
+            "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
+            "history": types.SimpleNamespace(History=Mock(return_value=store)),
+            "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views, "bluetooth": types.SimpleNamespace(BLE=Mock()),
+            "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),
+            "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
+        }
+        screen = Mock(width=320, height=240)
+        screen.measure_text.return_value = (40, 12)
+        namespace = {
+            "badge": Mock(ticks=0), "screen": screen,
+            "font": types.SimpleNamespace(nope=1), "shape": Mock(),
+            "color": types.SimpleNamespace(rgb=lambda *v: v), "HIRES": 1, "VSYNC": 2,
+            "run": Mock(),
+        }
+        for button in ("BACK", "UP", "DOWN", "SELECT", "MENU", "LEFT", "RIGHT"):
+            namespace["BUTTON_" + button] = button
+        namespace["badge"].pressed.return_value = False
+        with patch.dict(sys.modules, modules), patch("os.chdir"), \
+                patch("sys.path", []):
+            exec(compile((APP / "__init__.py").read_text(),
+                         str(APP / "__init__.py"), "exec"), namespace)
+        namespace["report_error"] = Mock()
+        namespace["view"] = 4
+        return namespace, screen, ticks
+
+    def test_trend_plots_each_paired_sensor_and_leaves_gaps(self):
+        bins = [None] * 90
+        bins[10:13] = [200, 210, 220]
+        bins[50] = -40
+        store = Mock(config={"sensors": ["a", None, "c"]}, warning="", last=[0])
+        store.graph.return_value = (bins, -40, 220, 4)
+        app, screen, ticks = self.make_app(store, 1_800_000_000)
+        app["update"]()
+        self.assertEqual([c.args for c in store.graph.call_args_list],
+                         [(0, 1_800_000_000, 86400, 1, 90),
+                          (2, 1_800_000_000, 86400, 1, 90)])
+        # Two runs per sensor: one 3-point run drawn as two doubled segments,
+        # and an isolated point drawn as a marker, never bridged across the gap.
+        self.assertEqual(screen.line.call_count, 2 * 2 * 2)
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("S2 Not paired", texts)
+        self.assertNotIn("No saved readings", texts)
+        store.graph.reset_mock()
+        ticks["ms"] = 59_000
+        app["update"]()
+        store.graph.assert_not_called()
+        ticks["ms"] = 61_000
+        app["update"]()
+        self.assertEqual(store.graph.call_count, 2)
+
+    def test_trend_without_time_or_history_is_explicit(self):
+        store = Mock(config={"sensors": ["a", "b", "c"]}, warning="", last=[0])
+        store.graph.return_value = ([None] * 90, None, None, 0)
+        app, screen, _ = self.make_app(store, None)
+        app["update"]()
+        store.graph.assert_not_called()
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("needs WiFi time", texts)
+        app, screen, _ = self.make_app(store, 1_800_000_000)
+        app["update"]()
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("No saved readings in the last 24 hours", texts)
+        screen.line.assert_not_called()
+
+    def test_trend_read_error_is_reported_and_not_retried_every_frame(self):
+        store = Mock(config={"sensors": ["a", None, None]}, warning="", last=[0])
+        store.graph.side_effect = OSError(5)
+        app, screen, _ = self.make_app(store, 1_800_000_000)
+        app["update"]()
+        app["update"]()
+        store.graph.assert_called_once()
+        app["report_error"].assert_called_once()
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        self.assertIn("History read failed; retry in 60s", texts)
+
     def test_temperature_bands(self):
         names = [views.BANDS[views.band(t)][1] for t in (-200, -1, 0, 159, 160,
                                                          239, 240, 299, 300, 450)]
@@ -298,10 +390,10 @@ class ViewTests(unittest.TestCase):
             namespace["update"]()
             seen.append(namespace["view"])
             self.assertEqual(namespace["page"], "live")
-        self.assertEqual(seen, [1, 2, 3, 0])
+        self.assertEqual(seen, [1, 2, 3, 4, 0])
         pressed["button"] = "LEFT"
         namespace["update"]()
-        self.assertEqual(namespace["view"], 3)
+        self.assertEqual(namespace["view"], 4)
         self.assertEqual(namespace["slot"], 0)
         texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
         for expected in ("-5.5", "21.5", "Not paired", "Freezing", "Comfy"):

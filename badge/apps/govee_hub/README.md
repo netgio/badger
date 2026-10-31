@@ -67,8 +67,8 @@ simulator or legacy badge.
 
 ### Display views
 
-The home screen has four views. The top-right label shows which one is open,
-for example `< Bars 2/4 >`. The selected view resets to List when the app is
+The home screen has five views. The top-right label shows which one is open,
+for example `< Bars 2/5 >`. The selected view resets to List when the app is
 reopened.
 
 1. **List**: temperature, humidity, battery, and reading age for each sensor.
@@ -82,6 +82,15 @@ reopened.
    Freezing (below 0 °C, snowman), Chilly (0–16 °C, beanie and scarf),
    Comfy (16–24 °C, smiling in the sun), Warm (24–30 °C, sunglasses on the
    beach), and Scorching (30 °C and above, melting in the heat).
+5. **24h temps**: saved temperature history for all three sensors on one
+   chart covering the last 24 hours. Each sensor has its own color, matching
+   the key at the top, and its number is shown at the end of its line. Points
+   are averages of the saved five-minute records (about 16 minutes per point),
+   on a shared scale labeled in °C. Times when nothing was recorded stay blank,
+   so lines are never drawn across gaps. The chart needs Wi-Fi time, as other
+   history does, and refreshes once a minute. It says so when there is no time
+   yet or no saved readings. A storage read error shows a message and retries
+   after a minute.
 
 Stale readings (older than 60 seconds) are grey and marked STALE; scenes show
 `?` for them rather than an out-of-date mood. Unpaired, waiting, and

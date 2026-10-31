@@ -1,6 +1,6 @@
 """Pure helpers for the home-screen display modes (values in tenths)."""
 
-MODES = ("List", "Bars", "Big numbers", "Scenes")
+MODES = ("List", "Bars", "Big numbers", "Scenes", "24h temps")
 
 # (upper bound exclusive in tenths of C, name); last band is open ended.
 BANDS = ((0, "Freezing"), (160, "Chilly"), (240, "Comfy"),
@@ -36,6 +36,21 @@ def scale(values, pad, min_span, step, floor=None, ceiling=None):
         low = max(floor, low - (high - ceiling)) if floor is not None else low - (high - ceiling)
         high = ceiling
     return low, high
+
+
+def runs(values):
+    """Split bucket values into unbroken runs of (index, value); None is a gap."""
+    result, current = [], []
+    for index, value in enumerate(values):
+        if value is None:
+            if current:
+                result.append(current)
+                current = []
+        else:
+            current.append((index, value))
+    if current:
+        result.append(current)
+    return result
 
 
 def fill(value, low, high, length):
