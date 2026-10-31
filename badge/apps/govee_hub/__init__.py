@@ -11,6 +11,7 @@ sys.path.insert(0, APP_DIR)
 from protocol import Scanner
 from history import History
 from clock import Clock
+import views
 
 try:
     import bluetooth
@@ -36,6 +37,13 @@ WHITE = color.rgb(235, 245, 255)
 GREEN = color.rgb(211, 250, 55)
 GRAY = color.rgb(137, 150, 165)
 RED = color.rgb(255, 130, 130)
+PANEL = color.rgb(36, 47, 58)
+TRACK = color.rgb(28, 36, 45)
+TEMP_PEN = color.rgb(255, 160, 70)
+HUMID_PEN = color.rgb(90, 170, 255)
+BLACK = color.rgb(10, 10, 14)
+BAND_PENS = (color.rgb(150, 210, 255), color.rgb(120, 170, 255), GREEN,
+             color.rgb(255, 190, 60), color.rgb(255, 90, 70))
 RANGES = (86400, 7 * 86400, 30 * 86400)
 RANGE_LABELS = ("24 hours", "7 days", "30 days")
 
@@ -53,6 +61,7 @@ except (OSError, ValueError, RuntimeError) as error:
 clock = Clock(time.ticks_ms, wifi, ntptime)
 slot = 0
 page = "live"
+view = 0
 candidate_index = 0
 range_index = 0
 field = 1
@@ -117,10 +126,14 @@ def decimal(value):
 
 
 def controls(now):
-    global slot, page, candidate_index, range_index, field, graph_dirty
+    global slot, page, candidate_index, range_index, field, graph_dirty, view
     if badge.pressed(BUTTON_BACK):
         page = "live"
     if page == "live":
+        if badge.pressed(BUTTON_LEFT):
+            view = (view - 1) % len(views.MODES)
+        if badge.pressed(BUTTON_RIGHT):
+            view = (view + 1) % len(views.MODES)
         if badge.pressed(BUTTON_UP):
             slot = (slot - 1) % 3
         if badge.pressed(BUTTON_DOWN):
@@ -154,8 +167,215 @@ def controls(now):
         graph_dirty = True
 
 
+def status(index, now):
+    """Return (state, reading, fresh) for one sensor slot."""
+    if history.config["sensors"][index] is None:
+        return "unpaired", None, False
+    device = device_for(index)
+    if device is None or device["seen"] is None:
+        return "waiting", None, False
+    if device["reading"][3]:
+        return "error", None, False
+    return "ok", device["reading"], now - device["seen"] <= 60000
+
+
+def note(state):
+    return {"unpaired": "Not paired", "waiting": "Waiting",
+            "error": "Sensor error"}[state]
+
+
+def right(value, x, y, pen=WHITE, size=1):
+    width, _ = screen.measure_text(str(value), font_size=size)
+    text(value, x - width, y, pen, size)
+
+
+def box(x, y, w, h, pen):
+    screen.pen = pen
+    screen.rectangle(x, y, w, h)
+
+
+def outline(x, y, w, h, pen):
+    box(x, y, w, 2, pen)
+    box(x, y + h - 2, w, 2, pen)
+    box(x, y, 2, h, pen)
+    box(x + w - 2, y, 2, h, pen)
+
+
+def disc(x, y, r, pen):
+    screen.pen = pen
+    screen.shape(shape.circle(x, y, r))
+
+
 def live(now):
     text("GOVEE HUB", 12, 10, GREEN, 2)
+    text("< %s %d/%d >" % (views.MODES[view], view + 1, len(views.MODES)),
+         196, 14, GRAY)
+    if view == 1:
+        bars_view(now)
+    elif view == 2:
+        big_view(now)
+    elif view == 3:
+        scene_view(now)
+    else:
+        list_view(now)
+    overflow = ("BLE queue overflow: %d" % scanner.dropped
+                if scanner and scanner.dropped else "")
+    text((storage_fault or scanner_fault or overflow or history.warning or
+          clock.message)[:48], 12, 207,
+         RED if storage_fault or scanner_fault or overflow else GRAY)
+    text("L/R view  UP/DOWN room  SELECT history", 12, 225, GRAY)
+
+
+def bars_view(now):
+    rows = [status(index, now) for index in range(3)]
+    readings = [reading for _, reading, _ in rows if reading]
+    temps = views.scale([r[0] for r in readings], 10, 40, 10)
+    humids = views.scale([r[1] for r in readings], 30, 100, 50, 0, 1000)
+    if temps:
+        text("Temp %d..%d C   Humidity %d..%d %%" % (
+            temps[0] // 10, temps[1] // 10, humids[0] // 10, humids[1] // 10),
+            12, 36, GRAY)
+    else:
+        text("Shared scale appears with the first reading", 12, 36, GRAY)
+    for index, (state, reading, fresh) in enumerate(rows):
+        y = 56 + index * 48
+        if index == slot:
+            box(6, y - 3, screen.width - 12, 45, PANEL)
+        text("Sensor %d" % (index + 1), 12, y + 4,
+             GREEN if index == slot else WHITE)
+        text("LIVE" if fresh else ("STALE" if reading else note(state)),
+             12, y + 22, WHITE if fresh else (RED if state == "error" else GRAY))
+        for row, (value, axis, pen, unit) in enumerate((
+                (reading and reading[0], temps, TEMP_PEN, " C"),
+                (reading and reading[1], humids, HUMID_PEN, " %"))):
+            by = y + 2 + row * 20
+            box(90, by, 156, 14, TRACK)
+            if reading:
+                box(90, by, views.fill(value, axis[0], axis[1], 156), 14,
+                    pen if fresh else GRAY)
+                text(decimal(value) + unit, 252, by + 1, WHITE if fresh else GRAY)
+
+
+def big_view(now):
+    text("Temperature C; humidity and battery below", 12, 36, GRAY)
+    for index in range(3):
+        state, reading, fresh = status(index, now)
+        y = 56 + index * 48
+        if index == slot:
+            box(6, y - 3, screen.width - 12, 45, PANEL)
+        text("Sensor %d" % (index + 1), 12, y + 4,
+             GREEN if index == slot else WHITE)
+        if reading is None:
+            right(note(state), 304, y + 12, RED if state == "error" else GRAY, 2)
+            continue
+        text("%s %%  %d%% batt" % (decimal(reading[1]), reading[2]), 12, y + 22,
+             GRAY)
+        if not fresh:
+            text("STALE", 120, y + 4, RED)
+        right(decimal(reading[0]), 304, y + 4,
+              BAND_PENS[views.band(reading[0])] if fresh else GRAY, 3)
+
+
+def scene_view(now):
+    text("Each room's mood follows its temperature", 12, 36, GRAY)
+    tick = badge.ticks // 120
+    for index in range(3):
+        state, reading, fresh = status(index, now)
+        x, y, w, h = 6 + index * 104, 52, 100, 150
+        if reading is None or not fresh:
+            box(x, y, w, h, TRACK)
+            text("Sensor %d" % (index + 1), x + 6, y + 6, WHITE)
+            text("?", x + 40, y + 50, GRAY, 3)
+            text("STALE" if reading else note(state), x + 6, y + h - 20,
+                 RED if state == "error" else GRAY)
+        else:
+            scene(views.band(reading[0]), x, y, w, h, tick + index * 7)
+            box(x, y, w, 20, BLACK)
+            text("S%d %s C" % (index + 1, decimal(reading[0])), x + 5, y + 4,
+                 WHITE)
+            box(x, y + h - 20, w, 20, BLACK)
+            text(views.BANDS[views.band(reading[0])][1], x + 5, y + h - 16,
+                 BAND_PENS[views.band(reading[0])])
+        if index == slot:
+            outline(x, y, w, h, GREEN)
+
+
+def scene(level, x, y, w, h, tick):
+    skies = ((70, 90, 130), (120, 140, 165), (110, 190, 245), (255, 200, 120),
+             (200, 70, 40))
+    grounds = ((240, 248, 255), (110, 95, 80), (70, 170, 70), (240, 210, 140),
+               (150, 60, 30))
+    box(x, y, w, h, color.rgb(*skies[level]))
+    gy = y + h - 42
+    box(x, gy, w, 22, color.rgb(*grounds[level]))
+    cx = x + w // 2
+    bob = (tick // 4) % 2
+    if level == 0:
+        for flake in range(6):
+            fx = x + 8 + (flake * 37) % (w - 16)
+            fy = y + 22 + (tick * 2 + flake * 23) % (gy - y - 22)
+            disc(fx, fy, 2, WHITE)
+        disc(cx, gy - 10, 14, WHITE)
+        disc(cx, gy - 32, 10, WHITE)
+        disc(cx - 4, gy - 34, 2, BLACK)
+        disc(cx + 4, gy - 34, 2, BLACK)
+        box(cx, gy - 31, 9, 3, color.rgb(255, 140, 40))
+        disc(cx, gy - 14, 2, BLACK)
+        disc(cx, gy - 6, 2, BLACK)
+        return
+    if level == 1:
+        for cloud in (x + 22, x + 70):
+            disc(cloud, y + 34, 9, color.rgb(225, 230, 238))
+            disc(cloud + 10, y + 32, 11, color.rgb(225, 230, 238))
+    if level in (2, 3):
+        sun = 13 if level == 3 else 10
+        disc(x + w - 20, y + 38, sun + 3 + bob, color.rgb(255, 245, 160))
+        disc(x + w - 20, y + 38, sun, color.rgb(255, 225, 60))
+    if level == 4:
+        for wave in range(3):
+            wy = y + 32 + wave * 14
+            shift = (tick + wave * 3) % 6
+            box(x + 10 + shift, wy, 22, 2, color.rgb(255, 180, 90))
+            box(x + 58 - shift, wy + 6, 22, 2, color.rgb(255, 180, 90))
+    if level == 2:
+        for stem in (x + 14, x + w - 16):
+            box(stem, gy - 8, 2, 8, color.rgb(40, 120, 40))
+            disc(stem + 1, gy - 10, 4, color.rgb(255, 120, 180))
+    bodies = ((0, 0, 0), (130, 170, 255), (120, 220, 120), (255, 170, 60),
+              (255, 90, 70))
+    body = color.rgb(*bodies[level])
+    by = gy - 18 - (bob if level != 4 else 0)
+    if level == 4:
+        screen.pen = body
+        screen.shape(shape.ellipse(cx, gy - 2, 24, 6))
+    disc(cx, by, 18, body)
+    disc(cx - 6, by - 4, 3, WHITE)
+    disc(cx + 6, by - 4, 3, WHITE)
+    disc(cx - 6, by - 4, 1, BLACK)
+    disc(cx + 6, by - 4, 1, BLACK)
+    if level == 1:
+        box(cx - 14, by - 20, 28, 9, color.rgb(200, 50, 60))
+        disc(cx, by - 23, 4, WHITE)
+        box(cx - 15, by + 9, 30, 5, color.rgb(200, 50, 60))
+        box(cx + 6, by + 9, 5, 14, color.rgb(200, 50, 60))
+        box(cx - 4, by + 4, 8, 2, BLACK)
+    elif level == 2:
+        box(cx - 6, by + 5, 12, 2, BLACK)
+        box(cx - 8, by + 3, 2, 2, BLACK)
+        box(cx + 6, by + 3, 2, 2, BLACK)
+    elif level == 3:
+        box(cx - 12, by - 8, 10, 6, BLACK)
+        box(cx + 2, by - 8, 10, 6, BLACK)
+        box(cx - 2, by - 7, 4, 2, BLACK)
+        box(cx - 6, by + 5, 12, 2, BLACK)
+    else:
+        disc(cx - 4, by + 7, 3, BLACK)
+        for drop in range(2):
+            dy = by - 10 + (tick + drop * 5) % 12
+            disc(cx + 18 + drop * 4, dy, 2, color.rgb(120, 200, 255))
+
+
+def list_view(now):
     text("30 days / 5-minute samples / UTC", 12, 36, GRAY)
     for index in range(3):
         y = 59 + index * 48
@@ -179,12 +399,6 @@ def live(now):
                 WHITE if age <= 60 else GRAY)
             text("%s / %ds ago" % ("LIVE" if age <= 60 else "STALE", age),
                  210, y, WHITE if age <= 60 else RED)
-    overflow = ("BLE queue overflow: %d" % scanner.dropped
-                if scanner and scanner.dropped else "")
-    text((storage_fault or scanner_fault or overflow or history.warning or
-          clock.message)[:48], 12, 207,
-         RED if storage_fault or scanner_fault or overflow else GRAY)
-    text("UP/DOWN room  SELECT history  HOME exit", 12, 225, GRAY)
 
 
 def pairing():

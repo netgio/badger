@@ -23,6 +23,7 @@ def load(name):
 protocol = load("protocol")
 history = load("history")
 clock = load("clock")
+views = load("views")
 
 
 def advertisement(temp=235, humid=456, battery=87, error=False):
@@ -225,6 +226,88 @@ class ClockTests(unittest.TestCase):
         wifi.disconnect.assert_called_once()
 
 
+class ViewTests(unittest.TestCase):
+    def test_shared_scale_covers_all_values_with_margin(self):
+        low, high = views.scale([182, 251, 214], 10, 40, 10)
+        self.assertLess(low, 182)
+        self.assertGreater(high, 251)
+        self.assertEqual((low % 10, high % 10), (0, 0))
+        self.assertEqual(views.scale([], 10, 40, 10), None)
+        self.assertEqual(views.scale([None], 10, 40, 10), None)
+
+    def test_scale_handles_negative_identical_and_clamped_values(self):
+        low, high = views.scale([-125, -125], 10, 40, 10)
+        self.assertLess(low, -125)
+        self.assertGreater(high, -125)
+        self.assertGreaterEqual(high - low, 40)
+        self.assertEqual(views.scale([995, 1000], 30, 100, 50, 0, 1000)[1], 1000)
+        low, high = views.scale([10, 20], 30, 100, 50, 0, 1000)
+        self.assertEqual(low, 0)
+        self.assertGreaterEqual(high - low, 100)
+
+    def test_fill_is_bounded(self):
+        self.assertEqual(views.fill(150, 100, 200, 156), 78)
+        self.assertEqual(views.fill(50, 100, 200, 156), 0)
+        self.assertEqual(views.fill(250, 100, 200, 156), 156)
+        self.assertEqual(views.fill(5, 5, 5, 156), 0)
+
+    def test_temperature_bands(self):
+        names = [views.BANDS[views.band(t)][1] for t in (-200, -1, 0, 159, 160,
+                                                         239, 240, 299, 300, 450)]
+        self.assertEqual(names, ["Freezing", "Freezing", "Chilly", "Chilly",
+                                 "Comfy", "Comfy", "Warm", "Warm",
+                                 "Scorching", "Scorching"])
+
+    def test_left_right_cycles_every_view_and_each_renders(self):
+        scan = Mock(dropped=0)
+        scan.devices = {
+            "a": {"seen": 0, "reading": (-55, 410, 90, False)},
+            "b": {"seen": 0, "reading": (215, 980, 50, False)},
+        }
+        store = Mock(config={"sensors": ["a", "b", None]}, warning="", last=[0])
+        session_clock = Mock(message="Waiting for time")
+        session_clock.now.return_value = None
+        fake_time = types.SimpleNamespace(ticks_ms=lambda: 0,
+                                         ticks_diff=lambda a, b: a - b)
+        modules = {
+            "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
+            "history": types.SimpleNamespace(History=Mock(return_value=store)),
+            "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views, "bluetooth": types.SimpleNamespace(BLE=Mock()),
+            "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),
+            "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
+        }
+        screen = Mock(width=320, height=240)
+        screen.measure_text.return_value = (40, 12)
+        namespace = {
+            "badge": Mock(ticks=12345), "screen": screen,
+            "font": types.SimpleNamespace(nope=1), "shape": Mock(),
+            "color": types.SimpleNamespace(rgb=lambda *v: v), "HIRES": 1, "VSYNC": 2,
+            "run": Mock(),
+        }
+        for button in ("BACK", "UP", "DOWN", "SELECT", "MENU", "LEFT", "RIGHT"):
+            namespace["BUTTON_" + button] = button
+        with patch.dict(sys.modules, modules), patch("os.chdir"), \
+                patch("sys.path", []):
+            exec(compile((APP / "__init__.py").read_text(),
+                         str(APP / "__init__.py"), "exec"), namespace)
+        pressed = {"button": "RIGHT"}
+        namespace["badge"].pressed.side_effect = lambda b: b == pressed["button"]
+        seen = []
+        for _ in range(len(views.MODES)):
+            namespace["update"]()
+            seen.append(namespace["view"])
+            self.assertEqual(namespace["page"], "live")
+        self.assertEqual(seen, [1, 2, 3, 0])
+        pressed["button"] = "LEFT"
+        namespace["update"]()
+        self.assertEqual(namespace["view"], 3)
+        self.assertEqual(namespace["slot"], 0)
+        texts = " ".join(str(c.args[0]) for c in screen.text.call_args_list)
+        for expected in ("-5.5", "21.5", "Not paired", "Freezing", "Comfy"):
+            self.assertIn(expected, texts)
+
+
 class LifecycleTests(unittest.TestCase):
     def test_scanner_error_keeps_controls_and_rendering_responsive(self):
         scan = Mock()
@@ -240,6 +323,7 @@ class LifecycleTests(unittest.TestCase):
             "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
             "history": types.SimpleNamespace(History=Mock(return_value=store)),
             "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views,
             "bluetooth": types.SimpleNamespace(BLE=Mock()),
             "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),
             "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
@@ -253,6 +337,7 @@ class LifecycleTests(unittest.TestCase):
         for button in ("BACK", "UP", "DOWN", "SELECT", "MENU", "LEFT", "RIGHT"):
             namespace["BUTTON_" + button] = button
         namespace["badge"].pressed.side_effect = lambda button: button == "DOWN"
+        namespace["screen"].measure_text.return_value = (40, 12)
         with patch.dict(sys.modules, modules), patch("os.chdir"), \
                 patch("sys.path", []):
             exec(compile((APP / "__init__.py").read_text(),
@@ -276,6 +361,7 @@ class LifecycleTests(unittest.TestCase):
             "protocol": types.SimpleNamespace(Scanner=Mock(return_value=scan)),
             "history": types.SimpleNamespace(History=Mock(return_value=Mock())),
             "clock": types.SimpleNamespace(Clock=Mock(return_value=session_clock)),
+            "views": views,
             "bluetooth": types.SimpleNamespace(BLE=Mock()),
             "wifi": Mock(), "ntptime": Mock(), "time": fake_time,
             "badgeware": types.SimpleNamespace(radio=types.SimpleNamespace(radio=Mock())),

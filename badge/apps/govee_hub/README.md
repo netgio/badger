@@ -60,10 +60,32 @@ simulator or legacy badge.
 
 | Screen | Controls |
 | --- | --- |
-| Live overview | UP/DOWN select sensor; SELECT opens history or pairs an empty slot |
+| Live overview | LEFT/RIGHT cycle display views; UP/DOWN select sensor; SELECT opens history or pairs an empty slot |
 | Pairing | UP/DOWN choose; SELECT saves an empty slot; BACK cancels |
 | History | LEFT/RIGHT select 24 hours, 7 days, or 30 days; SELECT switches temperature/humidity; BACK returns |
 | Everywhere | HOME returns to the menu and releases Bluetooth/Wi-Fi |
+
+### Display views
+
+The home screen has four views. The top-right label shows which one is open,
+for example `< Bars 2/4 >`. The selected view resets to List when the app is
+reopened.
+
+1. **List**: temperature, humidity, battery, and reading age for each sensor.
+2. **Bars**: temperature and humidity bars for every sensor. All bars of each
+   kind use the same scale: the lowest and highest current readings plus a
+   margin, rounded to whole degrees or 5 % steps. The scale is shown under the
+   title.
+3. **Big numbers**: large Celsius temperatures, colored by temperature band,
+   with humidity and battery below.
+4. **Scenes**: one small animated scene per sensor, chosen by temperature:
+   Freezing (below 0 °C, snowman), Chilly (0–16 °C, beanie and scarf),
+   Comfy (16–24 °C, smiling in the sun), Warm (24–30 °C, sunglasses on the
+   beach), and Scorching (30 °C and above, melting in the heat).
+
+Stale readings (older than 60 seconds) are grey and marked STALE; scenes show
+`?` for them rather than an out-of-date mood. Unpaired, waiting, and
+invalid-reading sensors are labeled explicitly in every view.
 
 History plots bucket averages in at most 80 screen columns, shows the actual
 sample count and minimum/maximum, and leaves missing buckets blank. Times are
