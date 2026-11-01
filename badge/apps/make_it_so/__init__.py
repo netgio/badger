@@ -2,7 +2,9 @@ import math
 import os
 import random
 
-APP_DIR = "/system/apps/star_field"
+from badgeware import State
+
+APP_DIR = "/system/apps/make_it_so"
 os.chdir(APP_DIR)
 
 badge.mode(HIRES | VSYNC)
@@ -23,7 +25,16 @@ CRUISE = 9.0           # depth units per second
 WARP = 30.0
 STAR_COUNT = 110
 SAUCER_COUNT = 2
-GALAXY_GAP_MS = (6000, 14000)
+GALAXY_GAP_MS = (3500, 8000)
+SAUCER_GAP_MS = (2000, 5500)
+
+TITLE = "Make it so..."
+TITLE_MS = 3500
+CATCH_Z = 3.0          # depth at which a galaxy or saucer reaches the ship
+CATCH_RADIUS = 24.0    # screen pixels (logical) from the centre that count as a hit
+GALAXY_POINTS = 10
+SAUCER_POINTS = 25
+POPUP_MS = 900
 
 SPACE = color.rgb(4, 4, 16)
 SAUCER_BODY = color.rgb(150, 160, 180)
@@ -31,12 +42,37 @@ SAUCER_RIM = color.rgb(90, 96, 115)
 DOME = color.rgb(140, 210, 255, 90)
 MONA = color.rgb(20, 20, 28)
 MONA_FACE = color.rgb(255, 214, 180)
+HUD = color.rgb(220, 235, 255)
+HUD_DIM = color.rgb(220, 235, 255, 110)
+GOLD = color.rgb(255, 215, 90)
 BEAM_LIGHTS = (color.rgb(255, 80, 80), color.rgb(255, 220, 60), color.rgb(80, 255, 120))
 STAR_TINTS = ((255, 255, 255), (190, 210, 255), (255, 235, 190), (255, 200, 200))
 GALAXY_TINTS = ((200, 150, 255), (120, 200, 255), (255, 160, 200))
 
 cx = screen.width / 2
 cy = screen.height / 2
+
+
+scores = {"best": 0}
+State.load("make_it_so", scores)
+if not isinstance(scores.get("best"), int) or scores["best"] < 0:
+    scores["best"] = 0
+score = 0
+popups = []
+
+
+def reached(x, y):
+    # True when an object at screen position (x, y) is under the reticle.
+    return math.sqrt((x - cx) ** 2 + (y - cy) ** 2) < CATCH_RADIUS * PX
+
+
+def collect(points, x, y, colour):
+    global score
+    score += points
+    popups.append([x, y, "+%d" % points, badge.ticks, colour])
+    if score > scores["best"]:
+        scores["best"] = score
+        State.save("make_it_so", scores)
 
 
 class Tilt:
@@ -128,7 +164,7 @@ class Star:
 class Galaxy:
     def __init__(self):
         self.active = False
-        self.next_ms = badge.ticks + random.randint(2000, 5000)
+        self.next_ms = badge.ticks + random.randint(1500, 3500)
 
     def spawn(self):
         self.active = True
@@ -154,9 +190,17 @@ class Galaxy:
         self.angle += self.spin * dt
         x, y, scale = project(self.x, self.y, self.z)
         r = self.radius * scale
-        if self.z < NEAR * 2 or x + r < 0 or x - r > screen.width or y + r < 0 or y - r > screen.height:
-            self.active = False
-            self.next_ms = badge.ticks + random.randint(*GALAXY_GAP_MS)
+        if self.z < CATCH_Z:
+            if reached(x, y):
+                collect(GALAXY_POINTS, x, y, color.rgb(*self.tint))
+            self.finish()
+            return
+        if x + r < 0 or x - r > screen.width or y + r < 0 or y - r > screen.height:
+            self.finish()
+
+    def finish(self):
+        self.active = False
+        self.next_ms = badge.ticks + random.randint(*GALAXY_GAP_MS)
 
     def draw(self):
         if not self.active:
@@ -183,16 +227,16 @@ class Galaxy:
 class Saucer:
     def __init__(self, delay=0):
         self.active = False
-        self.next_ms = badge.ticks + delay + random.randint(1500, 5000)
+        self.next_ms = badge.ticks + delay + random.randint(1000, 3500)
 
     def spawn(self):
         self.active = True
-        self.z = random.uniform(FAR * 0.18, FAR * 0.35)
+        self.z = random.uniform(FAR * 0.35, FAR * 0.6)
         hx, hy = spread(self.z)
         self.dir = random.choice((-1, 1))
         self.x = -self.dir * hx
         self.y = random.uniform(-hy * 0.6, hy * 0.6)
-        self.vx = self.dir * random.uniform(0.7, 1.2) * hx / 3
+        self.vx = self.dir * random.uniform(0.6, 1.0) * hx / 3
         self.phase = random.uniform(0, 6.28)
         self.lights = random.randint(0, 2)
 
@@ -202,14 +246,22 @@ class Saucer:
                 self.spawn()
             return
         self.x += self.vx * dt
-        self.z -= speed * 0.15 * dt
+        self.z -= speed * 0.5 * dt
         steer_world(self, sx, sy, dt)
         self.phase += dt * 3
         x, y, scale = project(self.x, self.y, self.z)
         w = 1.6 * scale
-        if self.z < NEAR * 4 or x + w < -10 or x - w > screen.width + 10 or y < -20 or y > screen.height + 20:
-            self.active = False
-            self.next_ms = badge.ticks + random.randint(3000, 9000)
+        if self.z < CATCH_Z:
+            if reached(x, y):
+                collect(SAUCER_POINTS, x, y, GOLD)
+            self.finish()
+            return
+        if x + w < -10 or x - w > screen.width + 10 or y < -20 or y > screen.height + 20:
+            self.finish()
+
+    def finish(self):
+        self.active = False
+        self.next_ms = badge.ticks + random.randint(*SAUCER_GAP_MS)
 
     def draw(self):
         if not self.active:
@@ -254,8 +306,55 @@ class Saucer:
 tilt = Tilt()
 stars = [Star() for _ in range(STAR_COUNT)]
 galaxy = Galaxy()
-saucers = [Saucer(i * 4000) for i in range(SAUCER_COUNT)]
+saucers = [Saucer(i * 2500) for i in range(SAUCER_COUNT)]
 speed = CRUISE
+started = badge.ticks
+
+
+def draw_reticle():
+    r = CATCH_RADIUS * PX
+    screen.pen = color.rgb(120, 255, 180, 60)
+    screen.shape(shape.circle(cx, cy, r).stroke(PX))
+    gap = r * 0.35
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        screen.shape(shape.line(cx + dx * gap, cy + dy * gap, cx + dx * gap * 2, cy + dy * gap * 2, PX))
+
+
+def draw_popups():
+    screen.font = font.smart
+    for popup in popups[:]:
+        x, y, text, born, colour = popup
+        age = badge.ticks - born
+        if age > POPUP_MS:
+            popups.remove(popup)
+            continue
+        t = age / POPUP_MS
+        screen.pen = colour
+        screen.shape(shape.circle(x, y, (8 + t * 50) * PX).stroke(2 * PX * (1 - t) + 0.5))
+        w, _ = screen.measure_text(text)
+        screen.text(text, x - w / 2, y - 10 * PX - t * 25 * PX)
+
+
+def draw_hud():
+    screen.font = font.sins
+    screen.pen = HUD
+    screen.text("%d" % score, 6, 4)
+    best = "best %d" % scores["best"]
+    w, _ = screen.measure_text(best)
+    screen.pen = HUD_DIM
+    screen.text(best, screen.width - w - 6, 4)
+    age = badge.ticks - started
+    if age < TITLE_MS:
+        alpha = 255 if age < TITLE_MS - 800 else int(255 * (TITLE_MS - age) / 800)
+        screen.font = font.smart
+        w, h = screen.measure_text(TITLE)
+        screen.pen = color.rgb(255, 255, 255, alpha)
+        screen.text(TITLE, cx - w / 2, screen.height * 0.18)
+        screen.font = font.sins
+        hint = "fly into galaxies and Mona"
+        w, _ = screen.measure_text(hint)
+        screen.pen = color.rgb(200, 220, 255, alpha * 3 // 4)
+        screen.text(hint, cx - w / 2, screen.height * 0.18 + h + 4)
 
 
 def update():
@@ -294,6 +393,9 @@ def update():
         star.draw(speed, warp)
     for saucer in sorted(saucers, key=lambda s: -s.z if s.active else 0):
         saucer.draw()
+    draw_reticle()
+    draw_popups()
+    draw_hud()
 
 
 run(update)

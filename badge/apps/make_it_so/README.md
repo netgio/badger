@@ -1,12 +1,16 @@
-# Star Field
+# Make it so...
 
-Star Field flies you through a tilt-steered starscape of twinkling stars, distant galaxies and Mona flying saucers.
+Make it so... is a tilt-steered flight through a starscape where you score points by flying into spiral galaxies and Mona's flying saucer.
 
 ## Usage
 
-Open **Star Field** from the badge menu and tilt the badge to steer through
+Open **Make It So** from the badge menu and tilt the badge to steer through
 space: lean it left or right to turn, and tip it forwards or backwards to climb
 or dive. The view slowly re-levels to however you are holding the badge.
+
+Line up a galaxy or Mona's saucer inside the green reticle as it reaches you to
+collect points: **10** for a galaxy and **25** for Mona. Your best score is
+saved between sessions.
 
 | Control | Action |
 | --- | --- |
@@ -15,9 +19,6 @@ or dive. The view slowly re-levels to however you are holding the badge.
 | Select (hold) | Warp speed |
 | Back | Re-level the tilt to the current position |
 | Home | Return to the menu |
-
-Spiral galaxies drift by every few seconds, and Mona occasionally cruises past
-in her flying saucer.
 
 ## Requirements
 
