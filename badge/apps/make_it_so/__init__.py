@@ -35,6 +35,7 @@ CATCH_RADIUS = 24.0    # screen pixels (logical) from the centre that count as a
 GALAXY_POINTS = 10
 SAUCER_POINTS = 25
 POPUP_MS = 900
+HIGH_SCORE_COUNT = 5
 
 SPACE = color.rgb(4, 4, 16)
 SAUCER_BODY = color.rgb(150, 160, 180)
@@ -53,12 +54,27 @@ cx = screen.width / 2
 cy = screen.height / 2
 
 
-scores = {"best": 0}
+scores = {"best": 0, "high_scores": []}
 State.load("make_it_so", scores)
-if not isinstance(scores.get("best"), int) or scores["best"] < 0:
+if type(scores.get("best")) is not int or scores["best"] < 0:
+    print("Make It So: ignoring invalid saved best score")
     scores["best"] = 0
+saved_table = scores.get("high_scores")
+if not isinstance(saved_table, list):
+    print("Make It So: ignoring invalid saved high-score table")
+    saved_table = []
+previous_scores = [value for value in saved_table if type(value) is int and value > 0]
+if len(previous_scores) != len(saved_table):
+    print("Make It So: ignoring invalid saved high-score entries")
+previous_scores.sort(reverse=True)
+if scores["best"] > (previous_scores[0] if previous_scores else 0):
+    previous_scores.insert(0, scores["best"])
+previous_scores = previous_scores[:HIGH_SCORE_COUNT]
+scores["high_scores"] = previous_scores[:]
+scores["best"] = previous_scores[0] if previous_scores else 0
 score = 0
 popups = []
+scores_opened = None
 
 
 def reached(x, y):
@@ -70,8 +86,11 @@ def collect(points, x, y, colour):
     global score
     score += points
     popups.append([x, y, "+%d" % points, badge.ticks, colour])
-    if score > scores["best"]:
-        scores["best"] = score
+    # Rebuild from earlier flights so this flight occupies only one row.
+    table = sorted(previous_scores + [score], reverse=True)[:HIGH_SCORE_COUNT]
+    if table != scores["high_scores"]:
+        scores["high_scores"] = table
+        scores["best"] = table[0]
         State.save("make_it_so", scores)
 
 
@@ -343,6 +362,7 @@ def draw_hud():
     w, _ = screen.measure_text(best)
     screen.pen = HUD_DIM
     screen.text(best, screen.width - w - 6, 4)
+    screen.text("Menu: high scores", 6, screen.height - 12 * PX)
     age = badge.ticks - started
     if age < TITLE_MS:
         alpha = 255 if age < TITLE_MS - 800 else int(255 * (TITLE_MS - age) / 800)
@@ -357,12 +377,55 @@ def draw_hud():
         screen.text(hint, cx - w / 2, screen.height * 0.18 + h + 4)
 
 
+def draw_high_scores():
+    screen.pen = SPACE
+    screen.shape(shape.rectangle(0, 0, screen.width, screen.height))
+    screen.font = font.smart
+    screen.pen = GOLD
+    title = "High scores"
+    w, _ = screen.measure_text(title)
+    screen.text(title, cx - w / 2, 10 * PX)
+    screen.font = font.sins
+    screen.pen = HUD_DIM
+    caption = "Flight %d - paused" % score
+    w, _ = screen.measure_text(caption)
+    screen.text(caption, cx - w / 2, 28 * PX)
+    for index in range(HIGH_SCORE_COUNT):
+        y = (45 + index * 12) * PX
+        screen.pen = GOLD if index == 0 else HUD
+        screen.text("%d." % (index + 1), 32 * PX, y)
+        value = str(scores["high_scores"][index]) if index < len(scores["high_scores"]) else "-"
+        w, _ = screen.measure_text(value)
+        screen.text(value, screen.width - 32 * PX - w, y)
+    screen.pen = HUD_DIM
+    hint = "Menu / Back: resume"
+    w, _ = screen.measure_text(hint)
+    screen.text(hint, cx - w / 2, screen.height - 12 * PX)
+
+
 def update():
-    global speed
+    global speed, scores_opened, started
     dt_ms = min(badge.ticks_delta, 100)
     dt = dt_ms / 1000
 
-    if badge.pressed(BUTTON_BACK):
+    if scores_opened is not None:
+        if badge.pressed(BUTTON_MENU) or badge.pressed(BUTTON_BACK):
+            paused_ms = badge.ticks - scores_opened
+            started += paused_ms
+            galaxy.next_ms += paused_ms
+            for saucer in saucers:
+                saucer.next_ms += paused_ms
+            for popup in popups:
+                popup[3] += paused_ms
+            scores_opened = None
+        else:
+            draw_high_scores()
+            return
+    elif badge.pressed(BUTTON_MENU):
+        scores_opened = badge.ticks
+        draw_high_scores()
+        return
+    elif badge.pressed(BUTTON_BACK):
         tilt.recentre()
     tilt.update(dt_ms)
     sx, sy = tilt.x, tilt.y
